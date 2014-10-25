@@ -1,3 +1,10 @@
+2014-10-25  Andrew Burgess  <andrew.burgess@embecosm.com>
+
+	* testsuite/ld-avr/relax-02.d: New file.
+	* testsuite/ld-avr/relax-02.s: New file.
+	* testsuite/ld-avr/relax-03.d: New file.
+	* testsuite/ld-avr/relax-03.s: New file.
+
 2014-07-12  Joern Rennecke  <joern.rennecke@embecosm.com>
 
 	* testsuite/ld-avr/avr.exp: Add symdiff dump test.
