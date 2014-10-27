@@ -208,3 +208,8 @@ extern void tc_cfi_frame_initial_instructions (void);
    relaxation, so do not resolve such expressions in the assembler.  */
 #define md_allow_local_subtract(l,r,s) avr_allow_local_subtract (l, r, s)
 extern bfd_boolean avr_allow_local_subtract (expressionS *, expressionS *, segT);
+
+/* We don't want all fixups to be passed to the linker, only those that
+   might be impacted by linker relaxation.  Setting this to false allows us
+   to be selective about which fixups to pass to the linker.  */
+#define TC_LINKRELAX_FIXUP(SEG) 0
