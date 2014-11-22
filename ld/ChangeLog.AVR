@@ -1,3 +1,19 @@
+2014-11-25  Andrew Burgess  <andrew.burgess@embecosm.com>
+
+	* emultempl/avrelf.em: Add include of elf/avr.h.
+	(avr_finish): New function.
+	(LDEMUL_FINISH): Added.
+	* testsuite/ld-avr/relax-elf-flags-01.d: New file.
+	* testsuite/ld-avr/relax-elf-flags-02.d: New file.
+	* testsuite/ld-avr/relax-elf-flags-03.d: New file.
+	* testsuite/ld-avr/relax-elf-flags-04.d: New file.
+	* testsuite/ld-avr/relax-elf-flags-05.d: New file.
+	* testsuite/ld-avr/relax-elf-flags-06.d: New file.
+	* testsuite/ld-avr/relax-elf-flags-07.d: New file.
+	* testsuite/ld-avr/relax-elf-flags-08.d: New file.
+	* testsuite/ld-avr/relax-elf-flags-a.s: New file.
+	* testsuite/ld-avr/relax-elf-flags-b.s: New file.
+
 2014-10-25  Andrew Burgess  <andrew.burgess@embecosm.com>
 
 	* testsuite/ld-avr/relax-02.d: New file.
