@@ -1,0 +1,4 @@
+2014-11-22  Andrew Burgess  <andrew.burgess@embecosm.com>
+
+	* readelf.c (decode_AVR_machine_flags): New function.
+	(get_machine_flags): Add EM_AVR case.
