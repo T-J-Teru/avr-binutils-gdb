@@ -1,3 +1,13 @@
+2014-11-25  Andrew Burgess  <andrew.burgess@embecosm.com>
+
+	* config/tc-avr.c: Add include for elf/avr.h.
+	(avr_elf_final_processing): New function.
+	* config/tc-avr.h (elf_tc_final_processing): Define.
+	(avr_elf_final_processing): Declare
+	* testsuite/gas/avr/link-relax-elf-flag-clear.d: New file.
+	* testsuite/gas/avr/link-relax-elf-flag-set.d: New file.
+	* testsuite/gas/avr/link-relax-elf-flag.s: New file.
+
 2014-10-27  Andrew Burgess  <andrew.burgess@embecosm.com>
 
 	* config/tc-avr.c (struct avr_opt_s): Change link_relax to

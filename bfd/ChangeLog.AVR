@@ -1,3 +1,8 @@
+2014-11-25  Andrew Burgess  <andrew.burgess@embecosm.com>
+
+	* elf32-avr.c (bfd_elf_avr_final_write_processing): Don't set
+	EF_AVR_LINKRELAX_PREPARED unconditionally.
+
 2014-10-27  Andrew Burgess  <andrew.burgess@embecosm.com>
 
 	* elf32-avr.c (elf32_avr_relax_delete_bytes): During linker

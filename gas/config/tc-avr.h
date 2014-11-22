@@ -213,3 +213,6 @@ extern bfd_boolean avr_allow_local_subtract (expressionS *, expressionS *, segT)
    might be impacted by linker relaxation.  Setting this to false allows us
    to be selective about which fixups to pass to the linker.  */
 #define TC_LINKRELAX_FIXUP(SEG) 0
+
+#define elf_tc_final_processing 	avr_elf_final_processing
+extern void avr_elf_final_processing (void);
