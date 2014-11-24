@@ -44,6 +44,9 @@ struct objdump_private_desc
   struct objdump_private_option *options;
 };
 
+/* ELF32_AVR specific target.  */
+extern const struct objdump_private_desc objdump_private_desc_elf32_avr;
+
 /* XCOFF specific target.  */
 extern const struct objdump_private_desc objdump_private_desc_xcoff;
 

@@ -399,6 +399,9 @@ changequote([,])dnl
 
 	# Add objdump private vectors.
 	case $targ in
+	avr-*-*)
+	  od_vectors="$od_vectors objdump_private_desc_elf32_avr"
+	  ;;
 	powerpc-*-aix*)
 	  od_vectors="$od_vectors objdump_private_desc_xcoff"
 	  ;;
@@ -423,6 +426,8 @@ for i in $od_vectors ; do
 	    od_files="$od_files od-xcoff" ;;
 	objdump_private_desc_mach_o)
 	    od_files="$od_files od-macho" ;;
+	objdump_private_desc_elf32_avr)
+	    od_files="$od_files od-elf32_avr" ;;
 	*) AC_MSG_ERROR(*** unknown private vector $i) ;;
 	esac
 	;;
