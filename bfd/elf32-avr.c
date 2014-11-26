@@ -26,6 +26,7 @@
 #include "elf/avr.h"
 #include "elf32-avr.h"
 
+#include <stdarg.h> /* Only for va_start in debug code.  */
 #include <stdint.h>
 
 /* Enable debugging printout at stdout with this variable.  */
@@ -101,6 +102,19 @@ struct elf32_avr_link_hash_table
   bfd_vma *    amt_stub_offsets;
   bfd_vma *    amt_destination_addr;
 };
+
+static void
+apb_log (const char *fmt, ...)
+{
+  va_list ap;
+
+  if (getenv ("APB_LOG") == NULL)
+    return;
+
+  va_start (ap, fmt);
+  vfprintf (stderr, fmt, ap);
+  va_end (ap);
+}
 
 /* Various hash macros and functions.  */
 #define avr_link_hash_table(p) \
@@ -699,6 +713,63 @@ static bfd_vma avr_pc_wrap_around = 0x10000000;
    instruction. This option could be switched off by a linker switch.  */
 static int avr_replace_call_ret_sequences = 1;
 
+
+struct avr_relax_info
+{
+  struct
+  {
+    unsigned count;
+    unsigned allocated;
+    struct avr_property_record *records;
+  } descriptors;
+};
+
+struct elf_avr_section_data
+{
+  struct bfd_elf_section_data elf;
+  struct avr_relax_info relax_info;
+};
+
+static bfd_boolean
+elf_avr_new_section_hook (bfd *abfd, asection *sec)
+{
+  if (!sec->used_by_bfd)
+    {
+      struct elf_avr_section_data *sdata;
+      bfd_size_type amt = sizeof (*sdata);
+
+      sdata = bfd_zalloc (abfd, amt);
+      if (sdata == NULL)
+	return FALSE;
+      sec->used_by_bfd = sdata;
+    }
+
+  return _bfd_elf_new_section_hook (abfd, sec);
+}
+
+static struct avr_relax_info *
+get_avr_relax_info (asection *sec)
+{
+  struct elf_avr_section_data *section_data;
+
+  /* No info available if no section or if it is an output section.  */
+  if (!sec || sec == sec->output_section)
+    return NULL;
+
+  section_data = (struct elf_avr_section_data *) elf_section_data (sec);
+  return &section_data->relax_info;
+}
+
+static void
+init_avr_relax_info (asection *sec)
+{
+  struct avr_relax_info *relax_info = get_avr_relax_info (sec);
+
+  relax_info->descriptors.count = 0;
+  relax_info->descriptors.allocated = 0;
+  relax_info->descriptors.records = NULL;
+}
+
 /* Initialize an entry in the stub hash table.  */
 
 static struct bfd_hash_entry *
@@ -1648,12 +1719,37 @@ elf32_avr_relax_delete_bytes (bfd *abfd,
   struct elf_link_hash_entry **sym_hashes;
   struct elf_link_hash_entry **end_hashes;
   unsigned int symcount;
+  struct avr_relax_info *relax_info;
+  struct avr_property_record *prop_record = NULL;
 
   symtab_hdr = &elf_tdata (abfd)->symtab_hdr;
   sec_shndx = _bfd_elf_section_from_bfd_section (abfd, sec);
   contents = elf_section_data (sec)->this_hdr.contents;
+  relax_info = get_avr_relax_info (sec);
 
   toaddr = sec->size;
+
+  if (relax_info->descriptors.count > 0)
+    {
+      /* There should be no property record within the range of deleted
+         bytes, however, there might be a property record for ADDR, this is
+         how we handle alignment directives.
+         Find the next (if any) property record after the deleted bytes.  */
+      unsigned int i;
+
+      for (i = 0; i < relax_info->descriptors.count; ++i)
+        {
+          bfd_vma offset = relax_info->descriptors.records [i].offset;
+
+          BFD_ASSERT (offset <= addr || offset >= (addr + count));
+          if (offset >= (addr + count))
+            {
+              prop_record = &relax_info->descriptors.records [i];
+              toaddr = offset;
+              break;
+            }
+        }
+    }
 
   irel = elf_section_data (sec)->relocs;
   irelend = irel + sec->reloc_count;
@@ -1662,7 +1758,32 @@ elf32_avr_relax_delete_bytes (bfd *abfd,
   if (toaddr - addr - count > 0)
     memmove (contents + addr, contents + addr + count,
              (size_t) (toaddr - addr - count));
-  sec->size -= count;
+  if (prop_record == NULL)
+    sec->size -= count;
+  else
+    {
+      /* Use the property record to fill in the bytes we've opened up.  */
+      int fill = 0;
+      switch (prop_record->type)
+        {
+        case RECORD_ORG_AND_FILL:
+          fill = prop_record->data.org.fill;
+          /* Fall through.  */
+        case RECORD_ORG:
+          break;
+        case RECORD_ALIGN_AND_FILL:
+          fill = prop_record->data.align.fill;
+          /* Fall through.  */
+        case RECORD_ALIGN:
+          prop_record->data.align.preceding_deleted += count;
+          break;
+        };
+      memset (contents + toaddr - count, fill, count);
+
+      /* Adjust the TOADDR to avoid moving symbols located at the address
+         of the property record, which has not moved.  */
+      toaddr -= count;
+    }
 
   /* Adjust all the reloc addresses.  */
   for (irel = elf_section_data (sec)->relocs; irel < irelend; irel++)
@@ -1791,7 +1912,7 @@ elf32_avr_relax_delete_bytes (bfd *abfd,
 	  if (isym->st_shndx == sec_shndx)
             {
 	      if (isym->st_value > addr
-                  && isym->st_value <= toaddr)
+                  && (isym->st_value <= toaddr))
                 isym->st_value -= count;
 
               if (isym->st_value <= addr
@@ -1820,7 +1941,7 @@ elf32_avr_relax_delete_bytes (bfd *abfd,
           && sym_hash->root.u.def.section == sec)
         {
           if (sym_hash->root.u.def.value > addr
-              && sym_hash->root.u.def.value <= toaddr)
+              && (sym_hash->root.u.def.value <= toaddr))
             sym_hash->root.u.def.value -= count;
 
           if (sym_hash->root.u.def.value <= addr
@@ -1973,6 +2094,135 @@ get_elf_r_symndx_offset (bfd *abfd, unsigned long r_symndx)
   return offset;
 }
 
+/* Iterate over the property records in HEADER, and copy each record into
+   the list of records within the relaxation information for the section to
+   which the record applies.  */
+
+static void
+avr_elf32_assign_records_to_sections (struct avr_property_header *header)
+{
+  unsigned int i;
+
+  for (i = 0; i < header->record_count; ++i)
+    {
+      struct avr_relax_info *relax_info;
+
+      relax_info = get_avr_relax_info (header->records [i].section);
+      BFD_ASSERT (relax_info != NULL);
+
+      if (relax_info->descriptors.count
+          == relax_info->descriptors.allocated)
+        {
+          /* Allocate more space.  */
+          bfd_size_type size;
+
+          relax_info->descriptors.allocated += 10;
+          size = (sizeof (struct avr_property_record)
+                  * relax_info->descriptors.allocated);
+          relax_info->descriptors.records
+            = bfd_realloc (relax_info->descriptors.records, size);
+        }
+
+      memcpy (&relax_info->descriptors.records [relax_info->descriptors.count],
+              &header->records [i],
+              sizeof (struct avr_property_record));
+      relax_info->descriptors.count++;
+    }
+}
+
+static int
+avr_property_record_compare (const void *ap, const void *bp)
+{
+  const struct avr_property_record *a
+    = (struct avr_property_record *) ap;
+  const struct avr_property_record *b
+    = (struct avr_property_record *) bp;
+
+  if (a->offset != b->offset)
+    return (a->offset - b->offset);
+
+  if (a->section != b->section)
+    return (bfd_get_section_vma (a->section->owner, a->section)
+            - bfd_get_section_vma (b->section->owner, b->section));
+
+  return (a->type - b->type);
+}
+
+static void
+avr_load_all_property_sections (struct bfd_link_info *link_info)
+{
+  bfd *abfd;
+  asection *sec;
+
+  /* Initialize the per-section relaxation info.  */
+  for (abfd = link_info->input_bfds; abfd != NULL; abfd = abfd->link.next)
+    for (sec = abfd->sections; sec != NULL; sec = sec->next)
+      {
+	init_avr_relax_info (sec);
+      }
+
+  /* Load the descriptor tables from .avr.prop sections.  */
+  for (abfd = link_info->input_bfds; abfd != NULL; abfd = abfd->link.next)
+    {
+      struct avr_property_header *header;
+
+      header = avr_elf32_load_property_records (abfd);
+      if (header != NULL)
+        avr_elf32_assign_records_to_sections (header);
+
+      free (header);
+    }
+
+  /* Now, for every section, ensure that the descriptor list in the
+     relaxation data is sorted by ascending offset within the section.  */
+  for (abfd = link_info->input_bfds; abfd != NULL; abfd = abfd->link.next)
+    for (sec = abfd->sections; sec != NULL; sec = sec->next)
+      {
+        struct avr_relax_info *relax_info = get_avr_relax_info (sec);
+        if (relax_info && relax_info->descriptors.count > 0)
+          {
+            unsigned int i;
+
+            qsort (relax_info->descriptors.records,
+                   relax_info->descriptors.count,
+                   sizeof (struct avr_property_record),
+                   avr_property_record_compare);
+
+            /* For debug purposes, list all the descriptors.  */
+            apb_log ("Section `%s' from `%s' has %d descriptors\n",
+                     sec->name,
+                     abfd->filename,
+                     relax_info->descriptors.count);
+            for (i = 0; i < relax_info->descriptors.count; ++i)
+              {
+                apb_log ("  Offset %#08lx, Type %s",
+                         relax_info->descriptors.records [i].offset,
+                         avr_elf32_property_record_name_string
+                         (&relax_info->descriptors.records [i]));
+                switch (relax_info->descriptors.records [i].type)
+                  {
+                  case RECORD_ORG:
+                    apb_log ("\n");
+                    break;
+                  case RECORD_ORG_AND_FILL:
+                    apb_log (", fill = %#08lx\n",
+                             relax_info->descriptors.records [i].data.org.fill);
+                    break;
+                  case RECORD_ALIGN:
+                    apb_log (", align = %#08lx\n",
+                             relax_info->descriptors.records [i].data.align.bytes);
+                    break;
+                  case RECORD_ALIGN_AND_FILL:
+                    apb_log (", align = %#08lx, fill = %#08lx\n",
+                             relax_info->descriptors.records [i].data.align.bytes,
+                             relax_info->descriptors.records [i].data.align.fill);
+                    break;
+                  };
+              }
+          }
+      }
+}
+
 /* This function handles relaxing for the avr.
    Many important relaxing opportunities within functions are already
    realized by the compiler itself.
@@ -2016,6 +2266,15 @@ elf32_avr_relax_section (bfd *abfd,
   bfd_byte *contents = NULL;
   Elf_Internal_Sym *isymbuf = NULL;
   struct elf32_avr_link_hash_table *htab;
+  static bfd_boolean relaxation_initialised = FALSE;
+
+  if (!relaxation_initialised)
+    {
+      relaxation_initialised = TRUE;
+
+      /* Load entries from the .avr.prop sections.  */
+      avr_load_all_property_sections (link_info);
+    }
 
   /* If 'shrinkable' is FALSE, do not shrink by deleting bytes while
      relaxing. Such shrinking can cause issues for the sections such
@@ -2677,6 +2936,68 @@ elf32_avr_relax_section (bfd *abfd,
               }
             break;
           }
+        }
+    }
+
+  if (!*again)
+    {
+      /* Look through all the property records in this section to see if
+         there's any alignment records that can be moved.  */
+      struct avr_relax_info *relax_info;
+
+      relax_info = get_avr_relax_info (sec);
+      if (relax_info->descriptors.count > 0)
+        {
+          unsigned int i;
+
+          for (i = 0; i < relax_info->descriptors.count; ++i)
+            {
+              switch (relax_info->descriptors.records [i].type)
+                {
+                case RECORD_ORG:
+                case RECORD_ORG_AND_FILL:
+                  break;
+                case RECORD_ALIGN:
+                case RECORD_ALIGN_AND_FILL:
+                  {
+                    /* Now to business.  */
+                    struct avr_property_record *record;
+                    unsigned long bytes_to_align;
+                    int count = 0;
+
+                    /* Look for alignment directives that have had enough
+                       bytes deleted before them, such that the directive
+                       can be moved backwards and still maintain the
+                       required alignment.  */
+                    record = &relax_info->descriptors.records [i];
+                    bytes_to_align
+                      = (unsigned long) (1 << record->data.align.bytes);
+                    while (record->data.align.preceding_deleted >=
+                           bytes_to_align)
+                      {
+                        record->data.align.preceding_deleted
+                          -= bytes_to_align;
+                        count += bytes_to_align;
+                      }
+
+                    if (count > 0)
+                      {
+                        bfd_vma addr = record->offset;
+
+                        /* We can delete COUNT bytes and this alignment
+                           directive will still be correctly aligned.
+                           First move the alignment directive, then delete
+                           the bytes.  */
+                        record->offset -= count;
+                        elf32_avr_relax_delete_bytes (abfd, sec,
+                                                      addr - count,
+                                                      count);
+                        *again = TRUE;
+                      }
+                  }
+                  break;
+                }
+            }
         }
     }
 
@@ -3521,14 +3842,14 @@ avr_find_section_for_address (bfd *abfd,
   return;
 }
 
-static struct avr_directive_header *
-avr_elf32_load_directive_records_from_section (bfd *abfd, asection *sec)
+static struct avr_property_header *
+avr_elf32_load_records_from_section (bfd *abfd, asection *sec)
 {
   char *contents = NULL, *ptr;
   bfd_size_type size, mem_size;
   bfd_byte version, flags;
   uint16_t record_count, i;
-  struct avr_directive_header *header = NULL;
+  struct avr_property_header *header = NULL;
   Elf_Internal_Rela *internal_relocs = NULL, *rel, *rel_end;
   struct avr_find_section_data fs_data;
 
@@ -3555,7 +3876,7 @@ avr_elf32_load_directive_records_from_section (bfd *abfd, asection *sec)
   */
 
   /* Check we have at least got space for the header.  */
-  if (size < 4)
+  if (size < AVR_PROPERTY_SECTION_HEADER_SIZE)
     goto load_failed;
 
   version = *((bfd_byte *) ptr);
@@ -3564,10 +3885,11 @@ avr_elf32_load_directive_records_from_section (bfd *abfd, asection *sec)
   ptr++;
   record_count = *((uint16_t *) ptr);
   ptr+=2;
+  BFD_ASSERT (ptr - contents == AVR_PROPERTY_SECTION_HEADER_SIZE);
 
   /* Now allocate space for the header and all of the records.  */
-  mem_size = sizeof (struct avr_directive_header)
-    + sizeof (struct avr_directive_record) * record_count;
+  mem_size = sizeof (struct avr_property_header)
+    + sizeof (struct avr_property_record) * record_count;
   header = bfd_malloc (mem_size);
   if (header == NULL)
     goto load_failed;
@@ -3575,9 +3897,14 @@ avr_elf32_load_directive_records_from_section (bfd *abfd, asection *sec)
   header->version = version;
   header->flags = flags;
   header->section = sec;
-  header->directive_record_count = record_count;
-  header->records = (struct avr_directive_record *) (&header [1]);
-  size -=4;
+  header->record_count = record_count;
+  header->records = (struct avr_property_record *) (&header [1]);
+  size -= AVR_PROPERTY_SECTION_HEADER_SIZE;
+
+  /* Check that we understand the version number.  There is only one
+     version number right now, anything else is an error.  */
+  if (header->version != AVR_PROPERTY_RECORDS_VERSION)
+    goto load_failed;
 
   rel = internal_relocs;
   rel_end = rel + sec->reloc_count;
@@ -3676,6 +4003,8 @@ avr_elf32_load_directive_records_from_section (bfd *abfd, asection *sec)
           header->records [i].data.align.bytes = *((uint32_t *) ptr);
           ptr += 4;
           size -= 4;
+          /* Just initialise PRECEDING_DELETED field.  */
+          header->records [i].data.align.preceding_deleted = 0;
           break;
         case RECORD_ALIGN_AND_FILL:
           /* A 4-byte alignment, and a 4-byte fill to load.  */
@@ -3686,6 +4015,8 @@ avr_elf32_load_directive_records_from_section (bfd *abfd, asection *sec)
           header->records [i].data.align.fill = *((uint32_t *) ptr);
           ptr += 4;
           size -= 8;
+          /* Just initialise PRECEDING_DELETED field.  */
+          header->records [i].data.align.preceding_deleted = 0;
           break;
         default:
           goto load_failed;
@@ -3703,8 +4034,8 @@ avr_elf32_load_directive_records_from_section (bfd *abfd, asection *sec)
   return NULL;
 }
 
-struct avr_directive_header *
-avr_elf32_load_directive_records (bfd *abfd)
+struct avr_property_header *
+avr_elf32_load_property_records (bfd *abfd)
 {
   asection *sec;
 
@@ -3712,15 +4043,15 @@ avr_elf32_load_directive_records (bfd *abfd)
   sec = bfd_get_section_by_name (abfd, ".avr.prop");
   if (sec == NULL)
     return NULL;
-  return avr_elf32_load_directive_records_from_section (abfd, sec);
+  return avr_elf32_load_records_from_section (abfd, sec);
 }
 
 const char *
-avr_elf32_directive_name_string (struct avr_directive_record *r)
+avr_elf32_property_record_name_string (struct avr_property_record *rec)
 {
   const char *str;
 
-  switch (r->type)
+  switch (rec->type)
     {
     case RECORD_ORG:
       str = "ORG";
@@ -3765,5 +4096,6 @@ avr_elf32_directive_name_string (struct avr_directive_record *r)
 #define bfd_elf32_bfd_relax_section elf32_avr_relax_section
 #define bfd_elf32_bfd_get_relocated_section_contents \
                                         elf32_avr_get_relocated_section_contents
+#define bfd_elf32_new_section_hook	elf_avr_new_section_hook
 
 #include "elf32-target.h"
